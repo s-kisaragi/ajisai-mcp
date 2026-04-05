@@ -122,7 +122,7 @@ export function handleAuthorizeGet(c: Context, password: string) {
 <body>
   <div class="card">
     <h1>ajisai-mcp</h1>
-    <p>記憶にアクセスするには認証が必要よ。</p>
+    <p>Authorization required to access memories.</p>
     <form method="POST" action="/authorize">
       <input type="hidden" name="client_id" value="${client_id ?? ""}">
       <input type="hidden" name="redirect_uri" value="${redirect_uri ?? ""}">
@@ -130,8 +130,8 @@ export function handleAuthorizeGet(c: Context, password: string) {
       <input type="hidden" name="code_challenge" value="${code_challenge ?? ""}">
       <input type="hidden" name="code_challenge_method" value="${code_challenge_method ?? "S256"}">
       <input type="hidden" name="response_type" value="code">
-      <input type="password" name="password" placeholder="パスワード" required autofocus>
-      <button type="submit">認証</button>
+      <input type="password" name="password" placeholder="Password" required autofocus>
+      <button type="submit">Authorize</button>
     </form>
   </div>
 </body>
@@ -150,7 +150,7 @@ export async function handleAuthorizePost(c: Context, password: string) {
 <style>body{font-family:-apple-system,sans-serif;background:#0a0a0a;color:#e74c3c;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;}
 .card{background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:2rem;max-width:360px;text-align:center;}
 a{color:#c4a7e7;}</style></head>
-<body><div class="card"><p>パスワードが違うわ。</p><a href="javascript:history.back()">戻る</a></div></body></html>`, 403);
+<body><div class="card"><p>Invalid password.</p><a href="javascript:history.back()">Back</a></div></body></html>`, 403);
   }
 
   const code = randomBytes(32).toString("base64url");

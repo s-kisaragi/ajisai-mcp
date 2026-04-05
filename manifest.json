@@ -13,7 +13,6 @@
       "command": "node",
       "args": ["${__dirname}/dist/index.js"],
       "env": {
-        "PATH": "/Users/satsuki/.local/share/mise/installs/node/24.13.0/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin",
         "AJISAI_S3_BUCKET": "${user_config.s3_bucket}",
         "AJISAI_S3_REGION": "${user_config.s3_region}",
         "AJISAI_S3_PREFIX": "${user_config.s3_prefix}",
