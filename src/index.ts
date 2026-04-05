@@ -421,63 +421,10 @@ server.tool(
         archived.push(`✓ ${row.session_id} → ${archiveKey} (${sizeKb}KB)`);
       }
 
-      // Archive subagent JONLs
-      const subagentRows = store.database.prepare(
-        `SELECT id, session_id, agent_id, file_path, file_size FROM conversation_subagents WHERE file_path LIKE ?`
-      ).all(`${claudeBase}%`) as Array<{
-        id: string;
-        session_id: string;
-        agent_id: string;
-        file_path: string;
-        file_size: number;
-      }>;
-
-      const updateSubPath = store.database.prepare(
-        `UPDATE conversation_subagents SET file_path = ? WHERE id = ?`
-      );
-
-      let subarchived = 0;
-      for (const sub of subagentRows) {
-        const projectRow = store.database.prepare(
-          `SELECT project_id FROM conversations WHERE session_id = ?`
-        ).get(sub.session_id) as { project_id: string } | undefined;
-        const pid = projectRow?.project_id ?? "unknown";
-
-        const subKey = `conversations/${convSource}/${pid}/${sub.session_id}/subagents/${sub.agent_id}.jsonl`;
-
-        if (await archive.exists(subKey)) continue;
-
-        try {
-          const rawData = fs.readFileSync(sub.file_path, "utf-8");
-          await archive.put(subKey, rawData);
-          updateSubPath.run(subKey, sub.id);
-          subarchived++;
-        } catch {
-          // File may have been deleted
-        }
-      }
-
-      // Archive sessions-index.json files for metadata preservation
-      const projDirs = fs.readdirSync(path.join(claudeBase, "projects"));
-      let indexArchived = 0;
-      for (const projDir of projDirs) {
-        const indexFile = path.join(claudeBase, "projects", projDir, "sessions-index.json");
-        if (!fs.existsSync(indexFile)) continue;
-        const indexKey = `metadata/${convSource}/${projDir}/sessions-index.json`;
-        if (await archive.exists(indexKey)) continue;
-        const data = fs.readFileSync(indexFile, "utf-8");
-        await archive.put(indexKey, data);
-        indexArchived++;
-      }
-
-      const summary = [`Archived ${archived.length} conversations`];
-      if (subarchived > 0) summary.push(`${subarchived} subagent logs`);
-      if (indexArchived > 0) summary.push(`${indexArchived} session indexes`);
-
       return {
         content: [{
           type: "text" as const,
-          text: `${summary.join(", ")}:\n\n${archived.join("\n")}`,
+          text: `Archived ${archived.length} conversations:\n\n${archived.join("\n")}`,
         }],
       };
     } catch (e) {
