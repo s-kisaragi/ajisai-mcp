@@ -4,6 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { SqliteMemoryStore } from "./store/sqlite-store.js";
+import { scanClaudeCodeMemories } from "./import.js";
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs";
@@ -160,6 +161,54 @@ server.tool(
     try {
       const memory = await store.restore(id, version);
       return { content: [{ type: "text" as const, text: JSON.stringify(memory, null, 2) }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: String(e) }], isError: true };
+    }
+  }
+);
+
+// --- Tool: memory_import ---
+server.tool(
+  "memory_import",
+  "Import memories from Claude Code's local memory files (~/.claude/projects/*/memory/). Scans all projects and imports markdown files with frontmatter.",
+  {
+    claudeDir: z.string().optional().describe("Custom path to Claude projects dir (default: ~/.claude/projects)"),
+    dryRun: z.boolean().optional().default(false).describe("If true, list what would be imported without actually importing"),
+  },
+  async ({ claudeDir, dryRun }) => {
+    try {
+      const files = scanClaudeCodeMemories(claudeDir ?? undefined);
+      if (files.length === 0) {
+        return { content: [{ type: "text" as const, text: "No Claude Code memory files found." }] };
+      }
+
+      if (dryRun) {
+        const summary = files.map((f: { type: string; name: string; projectId: string; filePath: string }) => `[${f.type}] ${f.name} (project: ${f.projectId}) — ${f.filePath}`);
+        return { content: [{ type: "text" as const, text: `Found ${files.length} memories:\n\n${summary.join("\n")}` }] };
+      }
+
+      const imported: string[] = [];
+      for (const f of files) {
+        const validTypes = ["user", "feedback", "project", "reference", "knowledge"] as const;
+        const memType = validTypes.includes(f.type as typeof validTypes[number])
+          ? (f.type as typeof validTypes[number])
+          : "knowledge";
+
+        const memory = await store.create({
+          type: memType,
+          scope: "project",
+          name: f.name,
+          description: f.description,
+          content: f.content,
+          projectId: f.projectId,
+          tags: ["imported", "claude-code"],
+        });
+        imported.push(`✓ ${memory.id} — [${memType}] ${f.name} (project: ${f.projectId})`);
+      }
+
+      return {
+        content: [{ type: "text" as const, text: `Imported ${imported.length} memories:\n\n${imported.join("\n")}` }],
+      };
     } catch (e) {
       return { content: [{ type: "text" as const, text: String(e) }], isError: true };
     }
