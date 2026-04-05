@@ -2,6 +2,11 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import { Hono } from "hono";
+import { serve } from "@hono/node-server";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { SqliteMemoryStore } from "./store/sqlite-store.js";
 import { scanClaudeCodeMemories } from "./import.js";
@@ -10,6 +15,7 @@ import { LocalArchiveStore, S3ArchiveStore } from "./archive/index.js";
 import type { ArchiveStore, ConversationSource } from "./archive/index.js";
 import { detectUnifyCandidates, linkProject, unlinkProject, listProjects, applyUnification } from "./projects.js";
 import { importClaudeAiConversations, importClaudeAiMemories, importClaudeAiProjects } from "./import-claude-ai.js";
+import { validateToken, handleDiscovery, handleRegister, handleAuthorizeGet, handleAuthorizePost, handleToken } from "./oauth.js";
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs";
@@ -40,14 +46,17 @@ function createArchiveStore(): ArchiveStore {
 
 const archive = createArchiveStore();
 
-// --- MCP Server ---
+// --- MCP Server (stdio mode) ---
 const server = new McpServer({
   name: "ajisai-mcp",
   version: "0.1.0",
 });
 
+// --- Tool Registration ---
+function registerTools(s: McpServer) {
+
 // --- Tool: memory_create ---
-server.tool(
+s.tool(
   "memory_create",
   "Create a new memory entry with type, scope, and content",
   {
@@ -67,7 +76,7 @@ server.tool(
 );
 
 // --- Tool: memory_get ---
-server.tool(
+s.tool(
   "memory_get",
   "Get a memory by its ID",
   {
@@ -83,7 +92,7 @@ server.tool(
 );
 
 // --- Tool: memory_update ---
-server.tool(
+s.tool(
   "memory_update",
   "Update an existing memory. Automatically records version history for content changes.",
   {
@@ -108,7 +117,7 @@ server.tool(
 );
 
 // --- Tool: memory_delete ---
-server.tool(
+s.tool(
   "memory_delete",
   "Delete a memory by ID",
   {
@@ -121,7 +130,7 @@ server.tool(
 );
 
 // --- Tool: memory_search ---
-server.tool(
+s.tool(
   "memory_search",
   "Full-text search across memories",
   {
@@ -142,7 +151,7 @@ server.tool(
 );
 
 // --- Tool: memory_list ---
-server.tool(
+s.tool(
   "memory_list",
   "List memories with optional filters",
   {
@@ -160,7 +169,7 @@ server.tool(
 );
 
 // --- Tool: memory_history ---
-server.tool(
+s.tool(
   "memory_history",
   "Get version history of a specific memory",
   {
@@ -173,7 +182,7 @@ server.tool(
 );
 
 // --- Tool: memory_restore ---
-server.tool(
+s.tool(
   "memory_restore",
   "Restore a memory to a specific version",
   {
@@ -191,7 +200,7 @@ server.tool(
 );
 
 // --- Tool: memory_import ---
-server.tool(
+s.tool(
   "memory_import",
   "Import memories from Claude Code's local memory files (~/.claude/projects/*/memory/). Scans all projects and imports markdown files with frontmatter.",
   {
@@ -239,7 +248,7 @@ server.tool(
 );
 
 // --- Tool: conversation_index ---
-server.tool(
+s.tool(
   "conversation_index",
   "Scan and index Claude Code conversation JSONL files. Raw data stays on disk; only metadata and message previews are indexed for search.",
   {
@@ -261,7 +270,7 @@ server.tool(
 );
 
 // --- Tool: conversation_list ---
-server.tool(
+s.tool(
   "conversation_list",
   "List indexed conversations with optional project filter",
   {
@@ -287,7 +296,7 @@ server.tool(
 );
 
 // --- Tool: conversation_get ---
-server.tool(
+s.tool(
   "conversation_get",
   "Get a conversation's indexed messages or raw JSONL data",
   {
@@ -319,7 +328,7 @@ server.tool(
 );
 
 // --- Tool: conversation_search ---
-server.tool(
+s.tool(
   "conversation_search",
   "Full-text search across conversation messages",
   {
@@ -354,7 +363,7 @@ server.tool(
 );
 
 // --- Tool: conversation_archive ---
-server.tool(
+s.tool(
   "conversation_archive",
   "Archive Claude Code conversation JSONL files to S3 (or local archive). Raw data is copied as-is; DB file_path is updated to point to the archive.",
   {
@@ -488,7 +497,7 @@ server.tool(
 );
 
 // --- Tool: conversation_fetch ---
-server.tool(
+s.tool(
   "conversation_fetch",
   "Fetch a conversation's raw JSONL from the archive (S3 or local). Use this when the original file may have been moved.",
   {
@@ -528,7 +537,7 @@ server.tool(
 );
 
 // --- Tool: import_claude_ai ---
-server.tool(
+s.tool(
   "import_claude_ai",
   "Import Claude.ai export data (conversations, memories, projects). Provide the path to the extracted export directory.",
   {
@@ -605,7 +614,7 @@ server.tool(
 );
 
 // --- Tool: project_unify ---
-server.tool(
+s.tool(
   "project_unify",
   "Detect scattered project directories that likely belong to the same repository, using file path fingerprinting and timeline analysis. Returns candidates for unification.",
   {
@@ -645,7 +654,7 @@ server.tool(
 );
 
 // --- Tool: project_link ---
-server.tool(
+s.tool(
   "project_link",
   "Manually link a directory path to a logical project (repository). Creates the repository if it doesn't exist.",
   {
@@ -664,7 +673,7 @@ server.tool(
 );
 
 // --- Tool: project_unlink ---
-server.tool(
+s.tool(
   "project_unlink",
   "Remove a directory path from its logical project association.",
   {
@@ -682,7 +691,7 @@ server.tool(
 );
 
 // --- Tool: project_list ---
-server.tool(
+s.tool(
   "project_list",
   "List all logical projects (repositories) with their directory aliases and session counts.",
   {},
@@ -705,12 +714,141 @@ server.tool(
   }
 );
 
+} // end registerTools
+
+// Register tools on the default stdio server
+registerTools(server);
+
 // --- Start ---
-async function main() {
+const MODE = process.env.AJISAI_TRANSPORT ?? (process.argv.includes("--http") ? "http" : "stdio");
+const PORT = parseInt(process.env.AJISAI_PORT ?? "3000", 10);
+
+async function startStdio() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   const archiveType = process.env.AJISAI_S3_BUCKET ? `s3://${process.env.AJISAI_S3_BUCKET}` : "local";
-  console.error(`ajisai-mcp started (db: ${DB_PATH}, archive: ${archiveType})`);
+  console.error(`ajisai-mcp started [stdio] (db: ${DB_PATH}, archive: ${archiveType})`);
+}
+
+async function startHttp() {
+  const app = new Hono();
+
+  // --- Auth (OAuth 2.0 + static Bearer) ---
+  const AUTH_PASSWORD = process.env.AJISAI_AUTH_PASSWORD;
+  const BASE_URL = process.env.AJISAI_BASE_URL ?? `http://localhost:${PORT}`;
+
+  const authEnabled = !!(AUTH_PASSWORD || process.env.AJISAI_AUTH_TOKEN);
+
+  // OAuth endpoints
+  if (AUTH_PASSWORD) {
+    app.get("/.well-known/oauth-authorization-server", (c) => handleDiscovery(c, BASE_URL));
+    app.post("/register", (c) => handleRegister(c));
+    app.get("/authorize", (c) => handleAuthorizeGet(c, AUTH_PASSWORD));
+    app.post("/authorize", (c) => handleAuthorizePost(c, AUTH_PASSWORD));
+    app.post("/token", (c) => handleToken(c));
+    console.error(`OAuth enabled (password: set, base: ${BASE_URL})`);
+  } else if (process.env.AJISAI_AUTH_TOKEN) {
+    console.error(`Auth enabled (static Bearer token)`);
+  } else {
+    console.error(`⚠ Auth disabled — set AJISAI_AUTH_PASSWORD or AJISAI_AUTH_TOKEN`);
+  }
+
+  // Session management
+  const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
+
+  // Auth check helper
+  function checkAuth(req: Request): Response | null {
+    if (!authEnabled) return null;
+    const auth = req.headers.get("authorization") ?? undefined;
+    if (auth && validateToken(auth)) return null;
+    return Response.json(
+      { jsonrpc: "2.0", error: { code: -32001, message: "Unauthorized" }, id: null },
+      { status: 401 }
+    );
+  }
+
+  app.post("/mcp", async (c) => {
+    const rejected = checkAuth(c.req.raw);
+    if (rejected) return rejected;
+
+    const sessionId = c.req.header("mcp-session-id");
+    const body = await c.req.json();
+    // Reconstruct Request with body (Hono already consumed it)
+    const reqWithBody = new Request(c.req.url, {
+      method: "POST",
+      headers: c.req.raw.headers,
+      body: JSON.stringify(body),
+    });
+
+    if (sessionId && transports.has(sessionId)) {
+      const transport = transports.get(sessionId)!;
+      return transport.handleRequest(reqWithBody);
+    }
+
+    if (!sessionId && isInitializeRequest(body)) {
+      const transport = new WebStandardStreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (sid) => {
+          transports.set(sid, transport);
+        },
+      });
+
+      transport.onclose = () => {
+        if (transport.sessionId) transports.delete(transport.sessionId);
+      };
+
+      const sessionServer = new McpServer({
+        name: "ajisai-mcp",
+        version: "0.1.0",
+      });
+
+      registerTools(sessionServer);
+      await sessionServer.connect(transport);
+      return transport.handleRequest(reqWithBody);
+    }
+
+    return c.json(
+      { jsonrpc: "2.0", error: { code: -32000, message: "Bad Request" }, id: null },
+      400
+    );
+  });
+
+  app.get("/mcp", async (c) => {
+    const rejected = checkAuth(c.req.raw);
+    if (rejected) return rejected;
+    const sessionId = c.req.header("mcp-session-id");
+    if (!sessionId || !transports.has(sessionId)) {
+      return c.body(null, 400);
+    }
+    return transports.get(sessionId)!.handleRequest(c.req.raw);
+  });
+
+  app.delete("/mcp", async (c) => {
+    const rejected = checkAuth(c.req.raw);
+    if (rejected) return rejected;
+    const sessionId = c.req.header("mcp-session-id");
+    if (!sessionId || !transports.has(sessionId)) {
+      return c.body(null, 400);
+    }
+    return transports.get(sessionId)!.handleRequest(c.req.raw);
+  });
+
+  app.get("/health", (c) => {
+    return c.json({ status: "ok", sessions: transports.size });
+  });
+
+  serve({ fetch: app.fetch, port: PORT }, () => {
+    const archiveType = process.env.AJISAI_S3_BUCKET ? `s3://${process.env.AJISAI_S3_BUCKET}` : "local";
+    console.error(`ajisai-mcp started [http://localhost:${PORT}/mcp] (db: ${DB_PATH}, archive: ${archiveType})`);
+  });
+}
+
+async function main() {
+  if (MODE === "http") {
+    await startHttp();
+  } else {
+    await startStdio();
+  }
 }
 
 main().catch((e) => {

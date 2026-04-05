@@ -1,0 +1,62 @@
+{
+  "manifest_version": "0.3",
+  "name": "ajisai-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for persistent Claude memory — CRUD, versioning, FTS search, S3 archive, cross-platform conversation indexing",
+  "author": {
+    "name": "s-kisaragi"
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "dist/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/dist/index.js"],
+      "env": {
+        "PATH": "/Users/satsuki/.local/share/mise/installs/node/24.13.0/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin",
+        "AJISAI_S3_BUCKET": "${user_config.s3_bucket}",
+        "AJISAI_S3_REGION": "${user_config.s3_region}",
+        "AJISAI_S3_PREFIX": "${user_config.s3_prefix}",
+        "AWS_ACCESS_KEY_ID": "${user_config.aws_access_key_id}",
+        "AWS_SECRET_ACCESS_KEY": "${user_config.aws_secret_access_key}"
+      }
+    }
+  },
+  "user_config": {
+    "s3_bucket": {
+      "type": "string",
+      "title": "S3 Bucket Name",
+      "description": "S3 bucket for conversation archive (leave empty for local-only mode)",
+      "required": false,
+      "default": ""
+    },
+    "s3_region": {
+      "type": "string",
+      "title": "S3 Region",
+      "description": "AWS region (e.g. ap-northeast-1)",
+      "required": false,
+      "default": "ap-northeast-1"
+    },
+    "s3_prefix": {
+      "type": "string",
+      "title": "S3 Key Prefix",
+      "description": "Prefix for S3 keys",
+      "required": false,
+      "default": "ajisai"
+    },
+    "aws_access_key_id": {
+      "type": "string",
+      "title": "AWS Access Key ID",
+      "description": "IAM access key for S3",
+      "required": false,
+      "sensitive": true
+    },
+    "aws_secret_access_key": {
+      "type": "string",
+      "title": "AWS Secret Access Key",
+      "description": "IAM secret key for S3",
+      "required": false,
+      "sensitive": true
+    }
+  }
+}
