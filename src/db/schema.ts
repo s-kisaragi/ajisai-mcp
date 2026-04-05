@@ -65,6 +65,34 @@ export function initializeSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_conversations_started ON conversations(started_at);
     CREATE INDEX IF NOT EXISTS idx_conv_messages_session ON conversation_messages(session_id);
 
+    -- Subagent conversations
+    CREATE TABLE IF NOT EXISTS conversation_subagents (
+      id            TEXT PRIMARY KEY,
+      session_id    TEXT NOT NULL,
+      agent_id      TEXT NOT NULL,
+      file_path     TEXT NOT NULL,
+      file_size     INTEGER NOT NULL DEFAULT 0,
+      message_count INTEGER NOT NULL DEFAULT 0,
+      indexed_at    TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_subagents_session ON conversation_subagents(session_id);
+
+    -- Lost sessions (metadata only, JSONL deleted by Claude Code)
+    CREATE TABLE IF NOT EXISTS lost_sessions (
+      session_id    TEXT PRIMARY KEY,
+      project_path  TEXT,
+      project_id    TEXT,
+      message_count INTEGER,
+      first_prompt  TEXT,
+      git_branch    TEXT,
+      created_at    TEXT,
+      modified_at   TEXT,
+      source_index  TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_lost_sessions_project ON lost_sessions(project_id);
+
     -- Logical project unification
     CREATE TABLE IF NOT EXISTS repositories (
       id          TEXT PRIMARY KEY,

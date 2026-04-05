@@ -9,6 +9,7 @@ import { indexConversations, getRawConversation } from "./conversations.js";
 import { LocalArchiveStore, S3ArchiveStore } from "./archive/index.js";
 import type { ArchiveStore, ConversationSource } from "./archive/index.js";
 import { detectUnifyCandidates, linkProject, unlinkProject, listProjects, applyUnification } from "./projects.js";
+import { importClaudeAiConversations, importClaudeAiMemories, importClaudeAiProjects } from "./import-claude-ai.js";
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs";
@@ -421,10 +422,63 @@ server.tool(
         archived.push(`✓ ${row.session_id} → ${archiveKey} (${sizeKb}KB)`);
       }
 
+      // Archive subagent JONLs
+      const subagentRows = store.database.prepare(
+        `SELECT id, session_id, agent_id, file_path, file_size FROM conversation_subagents WHERE file_path LIKE ?`
+      ).all(`${claudeBase}%`) as Array<{
+        id: string;
+        session_id: string;
+        agent_id: string;
+        file_path: string;
+        file_size: number;
+      }>;
+
+      const updateSubPath = store.database.prepare(
+        `UPDATE conversation_subagents SET file_path = ? WHERE id = ?`
+      );
+
+      let subarchived = 0;
+      for (const sub of subagentRows) {
+        const projectRow = store.database.prepare(
+          `SELECT project_id FROM conversations WHERE session_id = ?`
+        ).get(sub.session_id) as { project_id: string } | undefined;
+        const pid = projectRow?.project_id ?? "unknown";
+
+        const subKey = `conversations/${convSource}/${pid}/${sub.session_id}/subagents/${sub.agent_id}.jsonl`;
+
+        if (await archive.exists(subKey)) continue;
+
+        try {
+          const rawData = fs.readFileSync(sub.file_path, "utf-8");
+          await archive.put(subKey, rawData);
+          updateSubPath.run(subKey, sub.id);
+          subarchived++;
+        } catch {
+          // File may have been deleted
+        }
+      }
+
+      // Archive sessions-index.json files for metadata preservation
+      const projDirs = fs.readdirSync(path.join(claudeBase, "projects"));
+      let indexArchived = 0;
+      for (const projDir of projDirs) {
+        const indexFile = path.join(claudeBase, "projects", projDir, "sessions-index.json");
+        if (!fs.existsSync(indexFile)) continue;
+        const indexKey = `metadata/${convSource}/${projDir}/sessions-index.json`;
+        if (await archive.exists(indexKey)) continue;
+        const data = fs.readFileSync(indexFile, "utf-8");
+        await archive.put(indexKey, data);
+        indexArchived++;
+      }
+
+      const summary = [`Archived ${archived.length} conversations`];
+      if (subarchived > 0) summary.push(`${subarchived} subagent logs`);
+      if (indexArchived > 0) summary.push(`${indexArchived} session indexes`);
+
       return {
         content: [{
           type: "text" as const,
-          text: `Archived ${archived.length} conversations:\n\n${archived.join("\n")}`,
+          text: `${summary.join(", ")}:\n\n${archived.join("\n")}`,
         }],
       };
     } catch (e) {
@@ -467,6 +521,83 @@ server.tool(
         return { content: [{ type: "text" as const, text: `Archive not found: ${conv.file_path}` }], isError: true };
       }
       return { content: [{ type: "text" as const, text: data }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: String(e) }], isError: true };
+    }
+  }
+);
+
+// --- Tool: import_claude_ai ---
+server.tool(
+  "import_claude_ai",
+  "Import Claude.ai export data (conversations, memories, projects). Provide the path to the extracted export directory.",
+  {
+    exportDir: z.string().describe("Path to extracted export directory (e.g. ~/Downloads/data-2026-...)"),
+    dryRun: z.boolean().optional().default(false).describe("Preview what would be imported without importing"),
+    skipConversations: z.boolean().optional().default(false).describe("Skip conversation import"),
+    skipMemories: z.boolean().optional().default(false).describe("Skip memory import"),
+    skipProjects: z.boolean().optional().default(false).describe("Skip project import"),
+  },
+  async ({ exportDir, dryRun, skipConversations, skipMemories, skipProjects }) => {
+    try {
+      // Resolve ~ in path
+      const dir = exportDir.replace(/^~/, os.homedir());
+
+      if (!fs.existsSync(dir)) {
+        return { content: [{ type: "text" as const, text: `Directory not found: ${dir}` }], isError: true };
+      }
+
+      if (dryRun) {
+        const lines: string[] = ["Dry run — would import:"];
+        const convFile = path.join(dir, "conversations.json");
+        if (fs.existsSync(convFile)) {
+          const convs = JSON.parse(fs.readFileSync(convFile, "utf-8"));
+          lines.push(`  conversations.json: ${convs.length} conversations`);
+        }
+        const memFile = path.join(dir, "memories.json");
+        if (fs.existsSync(memFile)) {
+          const mems = JSON.parse(fs.readFileSync(memFile, "utf-8"));
+          const projMemCount = mems[0] ? Object.keys(mems[0].project_memories ?? {}).length : 0;
+          lines.push(`  memories.json: 1 global memory + ${projMemCount} project memories`);
+        }
+        const projFile = path.join(dir, "projects.json");
+        if (fs.existsSync(projFile)) {
+          const projs = JSON.parse(fs.readFileSync(projFile, "utf-8"));
+          const userProjs = projs.filter((p: { is_starter_project: boolean }) => !p.is_starter_project);
+          lines.push(`  projects.json: ${userProjs.length} projects (system prompts + docs)`);
+        }
+        return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+      }
+
+      const results: string[] = [];
+
+      // 1. Import projects first (needed for memory project name resolution)
+      let projects: Array<{ uuid: string; name: string; is_starter_project: boolean }> = [];
+      if (!skipProjects) {
+        const projResult = await importClaudeAiProjects(store, dir);
+        projects = projResult.projects;
+        results.push(`✓ Projects: ${projResult.imported} imported`);
+      } else {
+        // Still need project list for memory import
+        const projFile = path.join(dir, "projects.json");
+        if (fs.existsSync(projFile)) {
+          projects = JSON.parse(fs.readFileSync(projFile, "utf-8"));
+        }
+      }
+
+      // 2. Import memories
+      if (!skipMemories) {
+        const memResult = await importClaudeAiMemories(store, dir, projects as never);
+        results.push(`✓ Memories: ${memResult.imported} imported`);
+      }
+
+      // 3. Import conversations
+      if (!skipConversations) {
+        const convResult = await importClaudeAiConversations(store.database, archive, dir);
+        results.push(`✓ Conversations: ${convResult.conversations} indexed, ${convResult.messages} messages, ${convResult.archived} archived`);
+      }
+
+      return { content: [{ type: "text" as const, text: results.join("\n") }] };
     } catch (e) {
       return { content: [{ type: "text" as const, text: String(e) }], isError: true };
     }

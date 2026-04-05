@@ -185,6 +185,94 @@ export async function indexConversations(
     }
   }
 
+  // --- Index subagent JONLs ---
+  const insertSubagent = db.prepare(`
+    INSERT OR REPLACE INTO conversation_subagents
+      (id, session_id, agent_id, file_path, file_size, message_count, indexed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  const existingSubagent = db.prepare(
+    `SELECT id, file_size FROM conversation_subagents WHERE id = ?`
+  );
+
+  for (const projDir of projectDirs) {
+    const projPath = path.join(baseDir, projDir);
+    if (!fs.statSync(projPath).isDirectory()) continue;
+
+    // Find session directories that contain subagents/
+    const entries = fs.readdirSync(projPath, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const subagentsDir = path.join(projPath, entry.name, "subagents");
+      if (!fs.existsSync(subagentsDir)) continue;
+
+      const sessionId = entry.name;
+      const agentFiles = fs.readdirSync(subagentsDir).filter((f) => f.endsWith(".jsonl"));
+
+      for (const agentFile of agentFiles) {
+        const agentPath = path.join(subagentsDir, agentFile);
+        const agentId = path.basename(agentFile, ".jsonl");
+        const subId = `${sessionId}/${agentId}`;
+        const stat = fs.statSync(agentPath);
+
+        const existing = existingSubagent.get(subId) as { id: string; file_size: number } | undefined;
+        if (existing && existing.file_size === stat.size) {
+          skipped++;
+          continue;
+        }
+
+        // Count messages
+        let msgCount = 0;
+        const content = fs.readFileSync(agentPath, "utf-8");
+        for (const line of content.split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            const rec = JSON.parse(line);
+            if (rec.type === "user" || rec.type === "assistant") msgCount++;
+          } catch { /* skip */ }
+        }
+
+        insertSubagent.run(subId, sessionId, agentId, agentPath, stat.size, msgCount, new Date().toISOString());
+        indexed++;
+      }
+    }
+  }
+
+  // --- Index lost sessions from sessions-index.json ---
+  const insertLost = db.prepare(`
+    INSERT OR IGNORE INTO lost_sessions
+      (session_id, project_path, project_id, message_count, first_prompt, git_branch, created_at, modified_at, source_index)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  for (const projDir of projectDirs) {
+    const indexFile = path.join(baseDir, projDir, "sessions-index.json");
+    if (!fs.existsSync(indexFile)) continue;
+
+    const projectId = extractProjectId(projDir);
+
+    try {
+      const data = JSON.parse(fs.readFileSync(indexFile, "utf-8"));
+      for (const entry of data.entries ?? []) {
+        const fullPath = entry.fullPath ?? "";
+        // Only record if the JSONL file is actually missing
+        if (fullPath && !fs.existsSync(fullPath)) {
+          insertLost.run(
+            entry.sessionId,
+            entry.projectPath ?? null,
+            projectId,
+            entry.messageCount ?? null,
+            (entry.firstPrompt ?? "").slice(0, 500),
+            entry.gitBranch ?? null,
+            entry.created ?? null,
+            entry.modified ?? null,
+            indexFile
+          );
+        }
+      }
+    } catch { /* skip malformed index */ }
+  }
+
   return { indexed, skipped };
 }
 
