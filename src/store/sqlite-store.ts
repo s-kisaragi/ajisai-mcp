@@ -65,6 +65,11 @@ function rowToVersion(row: VersionRow): MemoryVersion {
 export class SqliteMemoryStore implements MemoryStore {
   private db: Database.Database;
 
+  /** Expose the raw DB handle for conversation indexing */
+  get database(): Database.Database {
+    return this.db;
+  }
+
   constructor(dbPath: string) {
     this.db = new Database(dbPath);
     this.db.pragma("journal_mode = WAL");

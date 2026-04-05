@@ -13,13 +13,18 @@
     "start": "node dist/index.js",
     "lint": "tsc --noEmit"
   },
-  "keywords": ["mcp", "claude", "memory"],
+  "keywords": [
+    "mcp",
+    "claude",
+    "memory"
+  ],
   "license": "MIT",
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1022.0",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "better-sqlite3": "^11.8.1",
-    "ulid": "^2.3.0",
-    "diff": "^7.0.0"
+    "diff": "^7.0.0",
+    "ulid": "^2.3.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
